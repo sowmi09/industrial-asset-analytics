@@ -1,0 +1,4 @@
+asset_id,records,ml_alert_minutes,rule_only_minutes,freeze_minutes,degradation_minutes,high_power_minutes,incidents,energy_evaluated_minutes,energy_unavailable_minutes,net_excess_energy_kwh,estimated_cost_loss_usd
+Chiller-01,20160,207,0,0,0,40,157,204,3,27.863552624951332,3.343626314994159
+Compressor-02,20160,803,30,120,0,0,143,833,0,0.0,0.0
+Pump-03,20160,5252,1612,0,6396,1152,212,6864,0,144.06637258029997,17.287964709635997
