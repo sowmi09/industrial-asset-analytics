@@ -1,0 +1,21 @@
+# Data processing and numerical computation
+numpy==1.26.4
+pandas==2.2.3
+scipy==1.14.1
+
+# Machine learning and serialization
+scikit-learn==1.5.2
+joblib==1.4.2
+
+# Data visualization
+matplotlib==3.9.2
+
+# REST API and validation
+fastapi==0.115.6
+uvicorn==0.34.0
+pydantic==2.10.4
+python-multipart==0.0.20
+
+# Automated testing
+pytest==8.3.4
+httpx==0.28.1
