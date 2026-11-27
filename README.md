@@ -72,6 +72,8 @@ Excess energy (kWh) = Sum of (Actual Power − Expected Power) × Interval Minut
 
 Estimated cost loss = Excess Energy × $0.12/kWh
 
+ML detection and diagnostic heuristics operate independently. A reading is flagged if either detects an anomaly; overlapping detections are counted only once. Consecutive flagged readings for the same asset are grouped into incidents.
+
 Independent diagnostic heuristics identify:
 
 - High power consumption without proportional flow increase.
@@ -110,9 +112,15 @@ Sample input files are available in the `data/` directory:
 
 Prerequisites: Docker and Docker Compose.
 
-Start the application:
+Clone the repository and start the application (with Docker running):
 
-    docker compose up --build
+```bash
+git clone https://github.com/sowmi09/industrial-asset-analytics.git
+cd industrial-asset-analytics
+docker compose up --build
+```
+
+The API uses the saved model artifacts in `models/`; retraining is not required when these artifacts are present.
 
 Swagger UI:
 
@@ -126,19 +134,9 @@ Stop the application:
 
     docker compose down
 
-### Batch API Examples
-
-CSV upload:
-
-    curl.exe -X POST http://localhost:8000/api/v1/batch-audit -F "file=@data/sample_batch_24h.csv"
-
-JSON input:
-
-    curl.exe -X POST http://localhost:8000/api/v1/batch-audit -H "Content-Type: application/json" --data-binary "@data/sample24hr.json"
-
 ## 6. Reproduce the Pipeline
 
-Run the following commands in order:
+Optional: regenerate the data, models and analysis outputs from scratch. Stop the API first with `docker compose down` if it is running. Run the following commands in order:
 
     docker compose run --rm analytics python src/generate_data.py
     docker compose run --rm analytics python src/data_processor.py
@@ -154,7 +152,168 @@ Run the following commands in order:
 
 Tests cover missing timestamp restoration, physical outlier handling, normal API prediction and critical anomaly diagnosis.
 
-## 8. Project Structure
+## 8. API Testing — Sample Inputs and Outputs
+
+With the API running, open http://localhost:8000/docs. Expand `POST /api/v1/diagnose`, click **Try it out**, paste a JSON input and click **Execute**.
+
+### Test 1 — Health Check
+
+Open http://localhost:8000/health.
+
+```json
+{
+  "status": "healthy",
+  "models_loaded": ["Chiller-01", "Compressor-02", "Pump-03"]
+}
+```
+
+### Test 2 — Normal Operation
+
+Input:
+
+```json
+{
+  "timestamp": "2026-10-01T14:30:00Z",
+  "asset_id": "Chiller-01",
+  "power_kw": 97.39,
+  "flow_rate": 400.0,
+  "supply_temp_c": 6.7,
+  "return_temp_c": 11.7,
+  "pressure_bar": 2.50,
+  "status": "RUNNING"
+}
+```
+
+Observed response:
+
+```json
+{
+  "anomaly_score": 0.45695393427333764,
+  "classification": "NORMAL",
+  "diagnostic_message": "No abnormal pattern detected in the current reading. Continue routine monitoring. A single reading cannot establish sensor freezing or long-term degradation."
+}
+```
+
+### Test 3 — Warning
+
+Reuse the complete input from Test 2, changing only `power_kw` to `110.0`.
+
+Observed classification: `WARNING`. Expected score range: 0.50 to below 0.75. The exact score was not recorded.
+
+### Test 4 — Critical High-Power Anomaly
+
+Reuse the complete input from Test 2, changing only `power_kw` to `150.0`.
+
+Observed response:
+
+```json
+{
+  "anomaly_score": 0.9444558289507292,
+  "classification": "CRITICAL",
+  "diagnostic_message": "High power consumption detected without proportional flow/operating-load increase. Inspect motor load and condenser conditions. A single reading cannot establish sensor freezing or long-term degradation."
+}
+```
+
+### Test 5 — Critical Anomaly Outside Supported Baseline Conditions
+
+Input (assignment example):
+
+```json
+{
+  "timestamp": "2026-10-01T14:30:00Z",
+  "asset_id": "Chiller-01",
+  "power_kw": 285.5,
+  "flow_rate": 450.0,
+  "supply_temp_c": 7.2,
+  "return_temp_c": 12.8,
+  "pressure_bar": 4.2,
+  "status": "RUNNING"
+}
+```
+
+Observed response:
+
+```json
+{
+  "anomaly_score": 1,
+  "classification": "CRITICAL",
+  "diagnostic_message": "ML detected unusual telemetry; no specific diagnostic heuristic confirmed. Review sensor quality and operating conditions before maintenance. Expected-power baseline unavailable for these operating conditions. A single reading cannot establish sensor freezing or long-term degradation."
+}
+```
+
+ML can flag an anomaly even when a specific engineering baseline or diagnosis is unavailable.
+
+### Test 6 — Invalid Sensor Reading
+
+Reuse the complete input from Test 2, changing only `power_kw` to `-10.0`.
+
+Observed response:
+
+```json
+{
+  "anomaly_score": null,
+  "classification": "NOT_EVALUATED",
+  "diagnostic_message": "Reading not evaluated: equipment is not RUNNING or sensor inputs are missing or invalid. A single reading cannot establish sensor freezing or long-term degradation."
+}
+```
+
+Invalid telemetry is not assigned a misleading ML anomaly score.
+
+### Test 7 — Batch CSV Audit
+
+Submit `data/sample_batch_24h.csv` to `POST /api/v1/batch-audit` through Swagger UI, or try the following command from the repository directory:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/batch-audit -F "file=@data/sample_batch_24h.csv"
+```
+
+Observed response summary (excluding `flagged_intervals` and the explanatory note):
+
+```json
+{
+  "total_records_analyzed": 4300,
+  "minute_slots_after_preprocessing": 4320,
+  "scored_records": 3203,
+  "unscored_records": 1117,
+  "anomaly_count": 141,
+  "ml_anomaly_count": 112,
+  "rule_only_count": 29,
+  "incident_count": 38,
+  "estimated_excess_energy_kwh": 12.011435437065572,
+  "estimated_cost_loss_usd": 1.4413722524478687,
+  "energy_evaluated_minutes": 141,
+  "energy_unavailable_minutes": 0
+}
+```
+
+Key incidents (October 15, 2026, UTC):
+
+| Asset | Flagged interval | Finding | Duration | Excess energy |
+|---|---|---|---:|---:|
+| Chiller-01 | 12:00–12:19 | High power consumption | 20 min | 12.01 kWh |
+| Compressor-02 | 14:00–14:59 | Return temperature sensor freeze | 60 min | 0 kWh |
+
+The full response includes incident timestamps, diagnostic messages and maintenance recommendations.
+
+### Test 8 — Batch JSON Audit
+
+Submit the equivalent JSON sample:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/batch-audit -H "Content-Type: application/json" --data-binary "@data/sample24hr.json"
+```
+
+For Windows PowerShell, use `curl.exe` instead of `curl`. Alternatively, the following PowerShell command was used successfully:
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8000/api/v1/batch-audit" -Method Post -ContentType "application/json" -InFile "data/sample24hr.json"
+```
+
+Both input formats were manually tested successfully. The JSON sample contains the same telemetry, with missing sensor values represented as `null`. The exact JSON response totals were not recorded; compare them against Test 7 to verify numerical consistency. The curl examples are provided as alternatives to the manually tested methods.
+
+The recorded scores above are reference results using the saved models; small numerical differences may occur across environments or after retraining.
+
+## 9. Project Structure
 
 | File / Directory | Purpose |
 |---|---|
@@ -173,7 +332,7 @@ Tests cover missing timestamp restoration, physical outlier handling, normal API
 | `Dockerfile` | Container environment |
 | `docker-compose.yaml` | Application deployment |
 
-## 9. Limitations
+## 10. Limitations
 
 - Models and engineering baselines are based on synthetic telemetry and require validation using real industrial data.
 - Anomaly scores indicate unusual behaviour, not failure probabilities.
